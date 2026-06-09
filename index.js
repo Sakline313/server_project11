@@ -31,97 +31,190 @@ async function run() {
 
     console.log("Connected smoothly to MongoDB Atlas!");
 
-    // -------------------------------------------------------------------------
     // 🕵️‍♂️ ADMIN CHECK ROUTE
-    // -------------------------------------------------------------------------
     app.get('/users/admin/:email', async (req, res) => {
-      const email = req.params.email;
-      if (email === 'admin@gmail.com') {
-        return res.send({ admin: true });
+      try {
+        const email = req.params.email;
+        if (email === 'admin@gmail.com') {
+          return res.send({ admin: true });
+        }
+        const query = { email: email };
+        const user = await usersCollection.findOne(query);
+        res.send({ admin: user?.role === 'admin' });
+      } catch (error) {
+        res.status(500).send({ message: "Admin check failure", error });
       }
-      const query = { email: email };
-      const user = await usersCollection.findOne(query);
-      res.send({ admin: user?.role === 'admin' });
     });
 
-      // -------------------------------------------------------------------------
-// 🚌 TRANSPORTS ROUTE (বাস/লঞ্চ/ট্রেনের লিস্ট ফ্রন্টএন্ডে দেখানোর API)
-// -------------------------------------------------------------------------
-app.get('/transports', async (req, res) => {
-  try {
-    const category = req.query.category; // যেমন: ?category=bus
-    let query = {};
-    
-    if (category) {
-      query.category = category; // শুধু নির্দিষ্ট ক্যাটাগরির ডেটা ফিল্টার করবে
-    }
+    // 🚌 TRANSPORTS ROUTE (১০০% ফুল-প্রুফ সার্চ ফিল্টারিং)
+    app.get('/transports', async (req, res) => {
+      try {
+        const { category, from, to, limit } = req.query;
+        let query = {};
+        
+        // 🎯 ফিক্সড: ক্যাটাগরিকেও কেস-ইনসেন্সিটিভ করা হলো (Bus/bus দুইটাই কাজ করবে)
+        if (category) {
+          query.category = { $regex: `^${category}$`, $options: 'i' };
+        }
+        
+        // 🎯 ফিক্সড: রুট লোকেশন লুজ সার্চ
+        if (from && from !== "Select Location") {
+          query.from = { $regex: from.trim(), $options: 'i' }; 
+        }
+        if (to && to !== "Select Location") {
+          query.to = { $regex: to.trim(), $options: 'i' };
+        }
 
-    const result = await transportsCollection.find(query).toArray();
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: "Error fetching transports data", error });
-  }
-});
+        // আপনার নোড কনসোলে কুয়েরি অবজেক্ট প্রিন্ট হবে (চেক করার জন্য)
+        console.log("Database Executing Query:", query);
 
-    // -------------------------------------------------------------------------
-    // 🎟️ TICKET BOOKING ROUTE (ইউজার যখন টিকিট কাটবে তখন এই এপিআই কল হবে)
-    // -------------------------------------------------------------------------
+        let cursor = transportsCollection.find(query);
+        
+        if (limit) {
+          cursor = cursor.limit(parseInt(limit));
+        }
+
+        const result = await cursor.toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Error fetching transports data", error });
+      }
+    });
+
+    // 🎯 SINGLE TRANSPORT DETAILS
+    app.get('/transports/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await transportsCollection.findOne(query);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Error fetching single transport details", error });
+      }
+    });
+
+    // 🎟️ TICKET BOOKING ROUTE
     app.post('/bookings', async (req, res) => {
-      const bookingData = req.body; 
-      // bookingData অবজেক্টে থাকবে: { email, transportType (bus/train/launch), route, price, date }
-      const result = await bookingsCollection.insertOne(bookingData);
-      res.send(result);
+      try {
+        const bookingData = req.body;
+        
+        const transportQuery = { _id: new ObjectId(bookingData.transportId) };
+        const transport = await transportsCollection.findOne(transportQuery);
+        
+        if (!transport) {
+          return res.status(404).send({ success: false, message: "Transport node not found" });
+        }
+
+        const seatsToBook = Number(bookingData.totalPassengers) || 1;
+        if (transport.availableSeats < seatsToBook) {
+          return res.status(400).send({ success: false, message: "Not enough available seats left!" });
+        }
+
+        const result = await bookingsCollection.insertOne(bookingData);
+
+        await transportsCollection.updateOne(transportQuery, {
+          $inc: { availableSeats: -seatsToBook }
+        });
+
+        res.send({ success: true, insertedId: result.insertedId });
+      } catch (error) {
+        res.status(500).send({ success: false, message: "Booking transactional failure", error });
+      }
     });
 
-    // -------------------------------------------------------------------------
+    // 🔍 GET BOOKINGS BY EMAIL
+    app.get('/bookings', async (req, res) => {
+      try {
+        let query = {};
+        if (req.query.email) {
+          query = { email: req.query.email };
+        }
+        const result = await bookingsCollection.find(query).toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Error fetching user bookings", error });
+      }
+    });
+
+    // 🗑️ DELETE BOOKING
+    app.delete('/bookings/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const bookingQuery = { _id: new ObjectId(id) };
+        
+        const booking = await bookingsCollection.findOne(bookingQuery);
+        if (!booking) {
+          return res.status(404).send({ message: "Booking data node not found" });
+        }
+
+        const result = await bookingsCollection.deleteOne(bookingQuery);
+
+        if (booking.transportId) {
+          const seatToRestore = Number(booking.totalPassengers) || 1;
+          await transportsCollection.updateOne(
+            { _id: new ObjectId(booking.transportId) },
+            { $inc: { availableSeats: seatToRestore } }
+          );
+        }
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to delete log node or revert seats", error });
+      }
+    });
+
     // 🔒 SECURE ADMIN PANEL ROUTES
-    // -------------------------------------------------------------------------
     app.get('/admin/bookings', async (req, res) => {
-      const email = req.query.email;
-      if (email !== 'admin@gmail.com') {
-        const user = await usersCollection.findOne({ email: email });
-        if (user?.role !== 'admin') {
-          return res.status(403).send({ message: 'Forbidden Access!' });
+      try {
+        const email = req.query.email;
+        if (email !== 'admin@gmail.com') {
+          const user = await usersCollection.findOne({ email: email });
+          if (user?.role !== 'admin') {
+            return res.status(403).send({ message: 'Forbidden Access!' });
+          }
         }
+        const result = await bookingsCollection.find().toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Error compiling live booking manifest", error });
       }
-      const result = await bookingsCollection.find().toArray();
-      res.send(result);
     });
 
-    // 📊 ড্যাশবোর্ডের ক্যাটাগরিভিত্তিক স্ট্যাটস ক্যালকুলেশন এপিআই
     app.get('/admin/stats', async (req, res) => {
-      const email = req.query.email;
-      if (email !== 'admin@gmail.com') {
-        const user = await usersCollection.findOne({ email: email });
-        if (user?.role !== 'admin') {
-          return res.status(403).send({ message: 'Forbidden Access!' });
+      try {
+        const email = req.query.email;
+        if (email !== 'admin@gmail.com') {
+          const user = await usersCollection.findOne({ email: email });
+          if (user?.role !== 'admin') {
+            return res.status(403).send({ message: 'Forbidden Access!' });
+          }
         }
+
+        const totalBookings = await bookingsCollection.countDocuments();
+        const totalUsers = await usersCollection.countDocuments();
+        
+        const busTickets = await bookingsCollection.countDocuments({ transportType: 'bus' });
+        const trainTickets = await bookingsCollection.countDocuments({ transportType: 'train' });
+        const launchTickets = await bookingsCollection.countDocuments({ transportType: 'launch' });
+
+        const bookingsArray = await bookingsCollection.find().toArray();
+        const totalRevenue = bookingsArray.reduce((sum, booking) => sum + (Number(booking.price) || 0), 0);
+
+        res.send({
+          totalBookings,
+          totalUsers,
+          totalRevenue,
+          busTickets,
+          trainTickets,
+          launchTickets
+        });
+      } catch (error) {
+        res.status(500).send({ message: "Analytics processing node failure", error });
       }
-
-      const totalBookings = await bookingsCollection.countDocuments();
-      const totalUsers = await usersCollection.countDocuments();
-      
-      // ট্রান্সপোর্ট টাইপ অনুযায়ী আলাদা আলাদা কাউন্ট করা
-      const busTickets = await bookingsCollection.countDocuments({ transportType: 'bus' });
-      const trainTickets = await bookingsCollection.countDocuments({ transportType: 'train' });
-      const launchTickets = await bookingsCollection.countDocuments({ transportType: 'launch' });
-
-      // ডাইনামিক রেভিনিউ হিসাব (টিকিটের দামের যোগফল)
-      const bookingsArray = await bookingsCollection.find().toArray();
-      const totalRevenue = bookingsArray.reduce((sum, booking) => sum + (Number(booking.price) || 0), 0);
-
-      res.send({
-        totalBookings,
-        totalUsers,
-        totalRevenue,
-        busTickets,
-        trainTickets,
-        launchTickets
-      });
     });
 
   } catch (error) {
-    console.error("Database error:", error);
+    console.error("Database initialization error:", error);
   }
 }
 run().catch(console.dir);
@@ -131,62 +224,6 @@ app.get('/', (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  console.log(`Server running smoothly on port ${port}`);
 });
-
-// 🔍 GET BOOKINGS BY EMAIL: নির্দিষ্ট ইউজারের বুকিং ফিল্টার করে দেখা
-app.get('/bookings', async (req, res) => {
-  try {
-    const database = client.db("ticketBariDB");
-    const bookingsCollection = database.collection("bookings");
-    
-    let query = {};
-    if (req.query.email) {
-      query = { email: req.query.email }; // ইমেইল ফিল্টারিং লজিক
-    }
-    
-    const result = await bookingsCollection.find(query).toArray();
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: "Error fetching bookings", error });
-  }
-});
-
-app.get('/transports', async (req, res) => {
-  try {
-    const { category, from, to, date } = req.query;
-    let query = {};
-    
-    if (category) query.category = category;
-    
-    // ফ্রন্টএন্ড থেকে সার্চ করা হলে এই ফিল্টারগুলো কুয়েরিতে যোগ হবে
-    if (from && from !== "Select Terminal" && from !== "Select Station" && from !== "Select Airport") {
-      query.from = from; 
-    }
-    if (to && to !== "Select Terminal" && to !== "Select Station" && to !== "Select Airport") {
-      query.to = to;
-    }
-    // আপনার ডাটাবেজে যদি date ফিল্ড থাকে তবে এটিও অন করতে পারেন:
-    // if (date) query.date = date;
-
-    const result = await transportsCollection.find(query).toArray();
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: "Error fetching transports data", error });
-  }
-});
-
-// 🗑️ DELETE BOOKING: টিকিট ক্যানসেল করার API
-app.delete('/bookings/:id', async (req, res) => {
-  try {
-    const id = req.params.id;
-    const database = client.db("ticketBariDB");
-    const bookingsCollection = database.collection("bookings");
-    
-    const query = { _id: new ObjectId(id) };
-    const result = await bookingsCollection.deleteOne(query);
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: "Failed to delete log node", error });
-  }
-});
+export default app;
