@@ -8,8 +8,11 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Middleware
-app.use(cors());
+// 🎯 ফিক্সড মিডলওয়্যার পজিশন (রুটের উপরে নিয়ে আসা হয়েছে এবং প্রোডাকশন অরিজিন সেট করা হয়েছে)
+app.use(cors({
+  origin: ["http://localhost:5173", "https://ticketerra-client.vercel.app"], 
+  credentials: true
+}));
 app.use(express.json());
 
 // MongoDB Connection URI
@@ -46,18 +49,16 @@ async function run() {
       }
     });
 
-    // 🚌 TRANSPORTS ROUTE (১০০% ফুল-প্রুফ সার্চ ফিল্টারিং)
+    // 🚌 TRANSPORTS ROUTE
     app.get('/transports', async (req, res) => {
       try {
         const { category, from, to, limit } = req.query;
         let query = {};
         
-        // 🎯 ফিক্সড: ক্যাটাগরিকেও কেস-ইনসেন্সিটিভ করা হলো (Bus/bus দুইটাই কাজ করবে)
         if (category) {
           query.category = { $regex: `^${category}$`, $options: 'i' };
         }
         
-        // 🎯 ফিক্সড: রুট লোকেশন লুজ সার্চ
         if (from && from !== "Select Location") {
           query.from = { $regex: from.trim(), $options: 'i' }; 
         }
@@ -65,7 +66,6 @@ async function run() {
           query.to = { $regex: to.trim(), $options: 'i' };
         }
 
-        // আপনার নোড কনসোলে কুয়েরি অবজেক্ট প্রিন্ট হবে (চেক করার জন্য)
         console.log("Database Executing Query:", query);
 
         let cursor = transportsCollection.find(query);
@@ -226,4 +226,5 @@ app.get('/', (req, res) => {
 app.listen(port, () => {
   console.log(`Server running smoothly on port ${port}`);
 });
+
 export default app;
