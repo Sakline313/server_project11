@@ -8,10 +8,12 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 5000;
 
-// 🎯 ফিক্সড মিডলওয়্যার পজিশন (রুটের উপরে নিয়ে আসা হয়েছে এবং প্রোডাকশন অরিজিন সেট করা হয়েছে)
+// 🎯 CORS কনফিগারেশন আপডেট (প্রোডাকশন ও লোকালহোস্ট উভয় এনভায়রনমেন্টের জন্য ফিক্সড)
 app.use(cors({
   origin: ["http://localhost:5173", "https://ticketerra-client.vercel.app"], 
-  credentials: true
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 app.use(express.json());
 
@@ -49,14 +51,14 @@ async function run() {
       }
     });
 
-    // 🚌 TRANSPORTS ROUTE
+    // 🚌 TRANSPORTS ROUTE (কোয়েরি ট্রিম ও সেফটি ফিক্সড)
     app.get('/transports', async (req, res) => {
       try {
         const { category, from, to, limit } = req.query;
         let query = {};
         
         if (category) {
-          query.category = { $regex: `^${category}$`, $options: 'i' };
+          query.category = { $regex: `^${category.trim()}$`, $options: 'i' };
         }
         
         if (from && from !== "Select Location") {
@@ -226,5 +228,7 @@ app.get('/', (req, res) => {
 app.listen(port, () => {
   console.log(`Server running smoothly on port ${port}`);
 });
+
+
 
 export default app;
